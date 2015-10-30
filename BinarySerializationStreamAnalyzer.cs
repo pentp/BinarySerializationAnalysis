@@ -45,8 +45,8 @@ namespace BinarySerializationAnalysis
 	public class BinarySerializationStreamAnalyzer
 	{
 		//yeah, I know, these could be better protected...
-		public Dictionary<int, SerialObject> SerialObjectsFound = null;
-		public Dictionary<int, BinaryLibrary> LibrariesFound = null;
+		public readonly Dictionary<long, SerialObject> SerialObjectsFound = new Dictionary<long, SerialObject>();
+		public readonly Dictionary<long, BinaryLibrary> LibrariesFound = new Dictionary<long, BinaryLibrary>();
 
 		//available to the other objects, used to read from the stream
 		internal BinaryReader reader = null;
@@ -59,19 +59,21 @@ namespace BinarySerializationAnalysis
 
 		public BinarySerializationStreamAnalyzer() { }
 
+		long streamPrefix;
+		internal long ReadID() => reader.ReadInt32() + streamPrefix;
+
 		public void Read(Stream inputStream)
 		{
 			//reset the state
 			reader = new BinaryReader(inputStream, Encoding.UTF8);
 			endRecordReached = false;
-			SerialObjectsFound = new Dictionary<int, SerialObject>();
-			LibrariesFound = new Dictionary<int, BinaryLibrary>();
 
 			//dig in
 			while(!endRecordReached)
 			{
 				ParseRecord(null);
 			}
+			streamPrefix += uint.MaxValue;
 		}
 
 		public string Analyze()
@@ -150,9 +152,9 @@ namespace BinarySerializationAnalysis
 			return sb.ToString();
 		}
 
-		internal int? ParseRecord(SerialObject parentObject)
+		internal long? ParseRecord(SerialObject parentObject)
 		{
-			int? serialObjectReferenceID = null;
+			long? serialObjectReferenceID = null;
 			if(PendingNullCounter == 0)
 			{
 				long startPosition = reader.BaseStream.Position;
@@ -167,8 +169,8 @@ namespace BinarySerializationAnalysis
 					case RecordTypeEnumeration.ClassWithID:
 						//just two ints, read directly
 						si = new ClassInfo();
-						si.ObjectID = reader.ReadInt32();
-						((ClassInfo)si).ReferencedObject = reader.ReadInt32();
+						si.ObjectID = ReadID();
+						((ClassInfo)si).ReferencedObject = ReadID();
 						//Use the referenced object definition for data retrieval rules
 						// -> this will overwrite the original values in the referenced object, but who cares - the values are trash anyway (for now).
 						((ClassInfo)SerialObjectsFound[((ClassInfo)si).ReferencedObject.Value]).ReadValueInfo(this);
@@ -183,7 +185,7 @@ namespace BinarySerializationAnalysis
 						//single structure, read in constructor
 						si = new ClassInfo(this);
 						//also library ID, read into place.
-						((ClassInfo)si).LibraryID = reader.ReadInt32();
+						((ClassInfo)si).LibraryID = ReadID();
 						//also values.
 						si.ReadValueInfo(this);
 						break;
@@ -201,14 +203,14 @@ namespace BinarySerializationAnalysis
 						//also member type info, read into place.
 						((ClassInfo)si).ReadTypeInfo(this);
 						//also library ID, read into place.
-						((ClassInfo)si).LibraryID = reader.ReadInt32();
+						((ClassInfo)si).LibraryID = ReadID();
 						//also values.
 						si.ReadValueInfo(this);
 						break;
 					case RecordTypeEnumeration.BinaryObjectString:
 						//simple structure, just an ID and a string
 						si = new ObjectString();
-						si.ObjectID = reader.ReadInt32();
+						si.ObjectID = ReadID();
 						((ObjectString)si).String = reader.ReadString();
 						break;
 					case RecordTypeEnumeration.BinaryArray:
@@ -225,7 +227,7 @@ namespace BinarySerializationAnalysis
 						break;
 					case RecordTypeEnumeration.MemberReference:
 						//just return the ID that was referenced.
-						serialObjectReferenceID = reader.ReadInt32();
+						serialObjectReferenceID = ReadID();
 						break;
 					case RecordTypeEnumeration.ObjectNull:
 						//a single null; do nothing, as null is the default return value.
@@ -235,11 +237,13 @@ namespace BinarySerializationAnalysis
 						endRecordReached = true;
 						break;
 					case RecordTypeEnumeration.BinaryLibrary:
-						int newLibraryID = reader.ReadInt32();
-						LibrariesFound.Add(newLibraryID, new BinaryLibrary());
-						LibrariesFound[newLibraryID].LibraryID = newLibraryID;
-						LibrariesFound[newLibraryID].Name = reader.ReadString();
-						LibrariesFound[newLibraryID].recordLength = reader.BaseStream.Position - startPosition;
+						var newLibraryID = ReadID();
+						LibrariesFound.Add(newLibraryID, new BinaryLibrary
+						{
+							LibraryID = newLibraryID,
+							Name = reader.ReadString(),
+							recordLength = reader.BaseStream.Position - startPosition,
+						});
 						break;
 					case RecordTypeEnumeration.ObjectNullMultiple256:
 						//a sequence of nulls; return null, and start a counter to continue returning N nulls over the next calls.
@@ -257,7 +261,7 @@ namespace BinarySerializationAnalysis
 					case RecordTypeEnumeration.ArraySinglePrimitive:
 						//This one's pretty easy to build, do locally.
 						si = new BinaryArray();
-						si.ObjectID = reader.ReadInt32();
+						si.ObjectID = ReadID();
 						((BinaryArray)si).ArrayType = BinaryArrayTypeEnumeration.Single;
 						((BinaryArray)si).BinaryType = BinaryTypeEnumeration.Primitive;
 						((BinaryArray)si).Rank = 1;
@@ -270,7 +274,7 @@ namespace BinarySerializationAnalysis
 					case RecordTypeEnumeration.ArraySingleObject:
 						//This should be pretty easy to build, do locally.
 						si = new BinaryArray();
-						si.ObjectID = reader.ReadInt32();
+						si.ObjectID = ReadID();
 						((BinaryArray)si).ArrayType = BinaryArrayTypeEnumeration.Single;
 						((BinaryArray)si).BinaryType = BinaryTypeEnumeration.Object;
 						((BinaryArray)si).Rank = 1;
@@ -286,7 +290,7 @@ namespace BinarySerializationAnalysis
 					case RecordTypeEnumeration.ArraySingleString:
 						//This should be pretty easy to build, do locally.
 						si = new BinaryArray();
-						si.ObjectID = reader.ReadInt32();
+						si.ObjectID = ReadID();
 						((BinaryArray)si).ArrayType = BinaryArrayTypeEnumeration.Single;
 						((BinaryArray)si).BinaryType = BinaryTypeEnumeration.String;
 						((BinaryArray)si).Rank = 1;
@@ -313,8 +317,8 @@ namespace BinarySerializationAnalysis
 				if(si != null)
 				{
 					SerialObjectsFound.Add(si.ObjectID, si);
-					SerialObjectsFound[si.ObjectID].recordLength = reader.BaseStream.Position - startPosition;
-					if(parentObject != null) SerialObjectsFound[si.ObjectID].ParentObjectID = parentObject.ObjectID;
+					si.recordLength = reader.BaseStream.Position - startPosition;
+					if(parentObject != null) si.ParentObjectID = parentObject.ObjectID;
 					return si.ObjectID;
 				}
 			}
@@ -326,14 +330,14 @@ namespace BinarySerializationAnalysis
 
 	public class BinaryLibrary
 	{
-		public int LibraryID;
+		public long LibraryID;
 		public string Name;
 		public long recordLength;
 	}
 
 	public interface SerialObject
 	{
-		int ObjectID { get; set; }
+		long ObjectID { get; set; }
 		long? ParentObjectID { get; set; }
 		long recordLength { get; set; }
 		void ReadValueInfo(BinarySerializationStreamAnalyzer analyzer);
@@ -359,7 +363,7 @@ namespace BinarySerializationAnalysis
 
 		internal ClassInfo(BinarySerializationStreamAnalyzer analyzer)
 		{
-			ObjectID = analyzer.reader.ReadInt32();
+			ObjectID = analyzer.ReadID();
 			Name = analyzer.reader.ReadString();
 			Members = new List<MemberInfo>(analyzer.reader.ReadInt32());
 			for(int i = 0;i < Members.Capacity;i++)
@@ -394,10 +398,10 @@ namespace BinarySerializationAnalysis
 			}
 		}
 
-		public int ObjectID { get; set; }
+		public long ObjectID { get; set; }
 		public long? ParentObjectID { get; set; }
-		public int? LibraryID;
-		public int? ReferencedObject;
+		public long? LibraryID;
+		public long? ReferencedObject;
 		public string Name;
 		public List<MemberInfo> Members;
 		public int ReferenceCount;
@@ -419,7 +423,7 @@ namespace BinarySerializationAnalysis
 	public class ClassTypeInfo
 	{
 		public string TypeName;
-		public int? LibraryID;
+		public long? LibraryID;
 	}
 
 	public class ObjectString:SerialObject
@@ -429,7 +433,7 @@ namespace BinarySerializationAnalysis
 			throw new NotImplementedException();
 		}
 
-		public int ObjectID { get; set; }
+		public long ObjectID { get; set; }
 		public long? ParentObjectID { get; set; }
 		public string String;
 		public long recordLength { get; set; }
@@ -441,7 +445,7 @@ namespace BinarySerializationAnalysis
 
 		internal BinaryArray(BinarySerializationStreamAnalyzer analyzer)
 		{
-			ObjectID = analyzer.reader.ReadInt32();
+			ObjectID = analyzer.ReadID();
 			ArrayType = (BinaryArrayTypeEnumeration)analyzer.reader.ReadByte();
 			Rank = analyzer.reader.ReadInt32();
 
@@ -471,7 +475,7 @@ namespace BinarySerializationAnalysis
 				TypeHelper.GetTypeValue(this, junk, analyzer);
 		}
 
-		public int ObjectID { get; set; }
+		public long ObjectID { get; set; }
 		public long? ParentObjectID { get; set; }
 		public SerialObject RelevantObject { get { return this; } set { throw new NotImplementedException(); } }
 		public BinaryArrayTypeEnumeration ArrayType;
@@ -518,7 +522,7 @@ namespace BinarySerializationAnalysis
 				case BinaryTypeEnumeration.Class:
 					typeHolder.TypeInfo = new ClassTypeInfo();
 					typeHolder.TypeInfo.TypeName = analyzer.reader.ReadString();
-					typeHolder.TypeInfo.LibraryID = analyzer.reader.ReadInt32();
+					typeHolder.TypeInfo.LibraryID = analyzer.ReadID();
 					break;
 				case BinaryTypeEnumeration.ObjectArray:
 					break;
@@ -549,7 +553,7 @@ namespace BinarySerializationAnalysis
 						case PrimitiveTypeEnumeration.Decimal:
 							string decimalValue = analyzer.reader.ReadString();
 							valueHolder.Value = decimal.Parse(decimalValue);
-							valueHolder.Value = analyzer.reader.ReadDecimal();
+							//valueHolder.Value = analyzer.reader.ReadDecimal();
 							break;
 						case PrimitiveTypeEnumeration.Double:
 							valueHolder.Value = analyzer.reader.ReadDouble();
